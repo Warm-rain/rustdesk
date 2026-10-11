@@ -129,6 +129,31 @@ flutter {
     source '../..'
 }
 
+// Flutter can package successfully without the Rust library loaded at startup.
+tasks.configureEach { task ->
+    if (task.name.startsWith('merge') && task.name.endsWith('NativeLibs')) {
+        task.doLast {
+            def missingLibraries = []
+            task.outputs.files.asFileTree.matching {
+                include '**/libflutter.so'
+            }.files.each { engineLibrary ->
+                ['librustdesk.so', 'libc++_shared.so'].each { libraryName ->
+                    def library = new File(engineLibrary.parentFile, libraryName)
+                    if (!library.isFile() || library.length() == 0) {
+                        missingLibraries.add("${engineLibrary.parentFile.name}/${libraryName}")
+                    }
+                }
+            }
+            if (!missingLibraries.isEmpty()) {
+                throw new GradleException(
+                    "Missing Android native libraries: ${missingLibraries.sort().join(', ')}. " +
+                    'Build and copy the Rust library and NDK C++ runtime into src/main/jniLibs for each target ABI before building the APK.'
+                )
+            }
+        }
+    }
+}
+
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
     implementation 'com.google.protobuf:protobuf-javalite:3.20.1'
