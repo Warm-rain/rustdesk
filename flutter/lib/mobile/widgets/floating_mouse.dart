@@ -48,7 +48,7 @@ class _CanvasScrollState {
   double _dy = 0;
   double _speed = 1.0;
   Rect _displayRect = Rect.zero;
-  Offset _mouseGlobalPosition = Offset.zero;
+  Offset _mouseCanvasPosition = Offset.zero;
 
   _CanvasScrollState({required this.inputModel, required this.canvasModel});
 
@@ -96,9 +96,9 @@ class _CanvasScrollState {
     }
   }
 
-  void tryStart(Rect displayRect, Offset mouseGlobalPosition) {
+  void tryStart(Rect displayRect, Offset mouseCanvasPosition) {
     _displayRect = displayRect;
-    _mouseGlobalPosition = mouseGlobalPosition;
+    _mouseCanvasPosition = mouseCanvasPosition;
     if (_timer != null) return;
     _timer = Timer.periodic(Duration(milliseconds: _intervalMillis), (timer) {
       if (_dx == 0 && _dy == 0) {
@@ -111,7 +111,7 @@ class _CanvasScrollState {
           canvasModel.panY(_dy);
         }
         final evt = inputModel.processEventToPeer(
-            InputModel.getMouseEventMove(), _mouseGlobalPosition,
+            InputModel.getMouseEventMove(), _mouseCanvasPosition,
             moveCanvas: false);
         if (shouldCancelScrollTimer(evt)) {
           tryCancel();
@@ -313,14 +313,10 @@ class _FloatingMouseState extends State<FloatingMouse> {
     _lastBlockedRect = newRect;
   }
 
-  Offset _getMouseGlobalPosition() {
-    final RenderBox? renderBox =
-        _cursorPaintKey.currentContext?.findRenderObject() as RenderBox?;
-    if (renderBox != null) {
-      return renderBox.localToGlobal(Offset.zero);
-    } else {
-      return _position;
-    }
+  Offset _getMouseCanvasPosition() {
+    // The cursor anchor is already canvas-local. RenderBox still has the
+    // previous frame's position during a drag and includes SafeArea insets.
+    return _position - Offset(0, _canvasModel.getAdjustY());
   }
 
   static Offset? _getPositionFromMouseRetEvt(Map<String, dynamic>? evt) {
@@ -380,12 +376,12 @@ class _FloatingMouseState extends State<FloatingMouse> {
         return;
       }
 
-      Offset? mouseGlobalPosition;
+      Offset? mouseCanvasPosition;
       Offset? positionInRemoteDisplay;
       if (isPositionChanged) {
-        mouseGlobalPosition = _getMouseGlobalPosition();
+        mouseCanvasPosition = _getMouseCanvasPosition();
         final evt = _inputModel.handleMouse(
-            InputModel.getMouseEventMove(), mouseGlobalPosition,
+            InputModel.getMouseEventMove(), mouseCanvasPosition,
             moveCanvas: false);
         positionInRemoteDisplay = _getPositionFromMouseRetEvt(evt);
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -400,11 +396,11 @@ class _FloatingMouseState extends State<FloatingMouse> {
         return;
       }
 
-      // Get the mouse global position and position in remote display
-      mouseGlobalPosition ??= _getMouseGlobalPosition();
+      // Get the mouse canvas position and position in remote display
+      mouseCanvasPosition ??= _getMouseCanvasPosition();
       if (positionInRemoteDisplay == null) {
         final evt = _inputModel.processEventToPeer(
-            InputModel.getMouseEventMove(), mouseGlobalPosition,
+            InputModel.getMouseEventMove(), mouseCanvasPosition,
             moveCanvas: false);
         positionInRemoteDisplay = _getPositionFromMouseRetEvt(evt);
       }
@@ -488,7 +484,7 @@ class _FloatingMouseState extends State<FloatingMouse> {
         _canvasScrollState.tryCancel();
         return;
       }
-      _canvasScrollState.tryStart(displayRect, mouseGlobalPosition);
+      _canvasScrollState.tryStart(displayRect, mouseCanvasPosition);
     });
   }
 
