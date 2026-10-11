@@ -15,6 +15,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/cm_file_model.dart';
+import 'package:flutter_hbb/models/connection_retry_policy.dart';
 import 'package:flutter_hbb/models/file_model.dart';
 import 'package:flutter_hbb/models/group_model.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
@@ -121,6 +122,7 @@ class FfiModel with ChangeNotifier {
   Timer? _restartReconnectDelayTimer;
   var _reconnects = 1;
   DateTime? _offlineReconnectStartTime;
+  final _mobileConnectionRetry = MobileConnectionRetryPolicy();
   bool _androidDocumentPickerActive = false;
   bool _androidDocumentPickerInterruptedConnection = false;
   bool _viewOnly = false;
@@ -258,6 +260,7 @@ class FfiModel with ChangeNotifier {
     _androidDocumentPickerActive = false;
     _androidDocumentPickerInterruptedConnection = false;
     resetRestartReconnectState();
+    _mobileConnectionRetry.reset();
     clearPermissions();
     waitForImageTimer?.cancel();
     timerScreenshot?.cancel();
@@ -343,6 +346,11 @@ class FfiModel with ChangeNotifier {
       } else if (name == 'sync_platform_additions') {
         handlePlatformAdditions(evt, sessionId, peerId);
       } else if (name == 'connection_ready') {
+        if (isAndroid) {
+          _mobileConnectionRetry.onConnected();
+          _timer?.cancel();
+          _timer = null;
+        }
         setConnectionType(peerId, evt['secure'] == 'true',
             evt['direct'] == 'true', evt['stream_type'] ?? '');
         resetRestartReconnectState();
@@ -898,6 +906,10 @@ class FfiModel with ChangeNotifier {
       return;
     }
 
+    if (isAndroid) {
+      _mobileConnectionRetry.onConnectionError(type, title, text, DateTime.now());
+    }
+
     // Disable relative mouse mode on any error-type message to ensure cursor is released.
     // This includes connection errors, session-ending messages, elevation errors, etc.
     // Safety: releasing pointer lock on errors prevents the user from being stuck.
@@ -925,6 +937,7 @@ class FfiModel with ChangeNotifier {
       // title/text for legacy UI and translation reuse; Flutter keeps the last
       // frame briefly, then shows the Connecting overlay.
       if (_restartReconnectDelayTimer == null) {
+        if (isAndroid) _mobileConnectionRetry.onReconnect();
         parent.target?.inputModel.setRelativeMouseMode(false);
         _cancelPendingMonitorRestore();
         bind.sessionReconnect(sessionId: sessionId, forceRelay: false);
@@ -962,7 +975,11 @@ class FfiModel with ChangeNotifier {
           sessionId, type, title, text, link, hasRetry, dialogManager);
     } else {
       var hasRetry = evt['hasRetry'] == 'true';
-      if (!hasRetry) {
+      if (isAndroid &&
+          _mobileConnectionRetry.handlesConnectionError(type, title, text)) {
+        hasRetry = _mobileConnectionRetry.shouldAutoRetry(
+            type, title, text, DateTime.now());
+      } else if (!hasRetry) {
         hasRetry = shouldAutoRetryOnOffline(type, title, text);
       }
       showMsgBox(sessionId, type, title, text, link, hasRetry, dialogManager);
@@ -1087,6 +1104,14 @@ class FfiModel with ChangeNotifier {
     _timer?.cancel();
     if (hasRetry) {
       _timer = Timer(Duration(seconds: _reconnects), () {
+        if (isAndroid &&
+            _mobileConnectionRetry.handlesConnectionError(type, title, text) &&
+            !_mobileConnectionRetry.shouldAutoRetry(
+                type, title, text, DateTime.now())) {
+          showMsgBox(sessionId, type, title, text, link, false, dialogManager,
+              hasCancel: hasCancel);
+          return;
+        }
         reconnect(dialogManager, sessionId, false);
       });
       _reconnects *= 2;
@@ -1109,6 +1134,11 @@ class FfiModel with ChangeNotifier {
 
   void reconnect(OverlayDialogManager dialogManager, SessionID sessionId,
       bool forceRelay) {
+    if (isAndroid) {
+      _timer?.cancel();
+      _timer = null;
+      _mobileConnectionRetry.onReconnect();
+    }
     // Disable relative mouse mode before reconnecting to ensure cursor is released.
     parent.target?.inputModel.setRelativeMouseMode(false);
     _cancelPendingMonitorRestore();
@@ -1117,6 +1147,18 @@ class FfiModel with ChangeNotifier {
     dialogManager.dismissAll();
     dialogManager.showLoading(translate('Connecting...'),
         onCancel: closeConnection);
+  }
+
+  void reconnectOnAndroidResume(DateTime? backgroundedAt) {
+    if (!isAndroid ||
+        parent.target?.closed != false ||
+        _androidDocumentPickerActive) {
+      return;
+    }
+    if (_mobileConnectionRetry.reconnectOnResume(backgroundedAt, DateTime.now())) {
+      _reconnects = 1;
+      reconnect(parent.target!.dialogManager, sessionId, false);
+    }
   }
 
   Future<void> showRelayHintDialog(
@@ -1478,6 +1520,7 @@ class FfiModel with ChangeNotifier {
     }
 
     _pi.isSet.value = true;
+    if (isAndroid && !isCache) _mobileConnectionRetry.onPeerInfo();
     stateGlobal.resetLastResolutionGroupValues(peerId);
 
     if (isDesktop || isWebDesktop) {
@@ -4092,6 +4135,7 @@ class FFI {
   /// Mobile reuse FFI
   void mobileReset() {
     ffiModel.resetRestartReconnectState();
+    ffiModel._mobileConnectionRetry.reset();
     ffiModel.waitForFirstImage.value = true;
     ffiModel.isRefreshing = false;
     ffiModel.waitForImageDialogShow.value = true;
