@@ -77,6 +77,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   Worker? _waylandKeyboardGateWorker;
   bool _waylandKeyboardGateInitialized = false;
+  DateTime? _backgroundedAt;
 
   InputModel get inputModel => gFFI.inputModel;
   SessionID get sessionId => gFFI.sessionId;
@@ -182,6 +183,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       trySyncClipboard();
+      gFFI.ffiModel.reconnectOnMobileResume(_backgroundedAt);
+      _backgroundedAt = null;
+    } else if (state == AppLifecycleState.paused) {
+      _backgroundedAt ??= DateTime.now();
     }
   }
 
